@@ -1,40 +1,82 @@
 #![no_std]
 #![no_main]
-#![feature(type_alias_impl_trait)]
 
+use core::cell::RefCell;
 use clocklib::ClockDisplay;
 use defmt::*;
+use embassy_embedded_hal::shared_bus::blocking::i2c::I2cDevice;
 use embassy_executor::Spawner;
 use embassy_futures::select::select;
 use embassy_futures::select::Either;
 use embassy_rp::gpio;
 use embassy_rp::gpio::AnyPin;
 use embassy_rp::gpio::Pin;
-use embassy_rp::i2c::Blocking;
-use embassy_rp::i2c::I2c;
-use embassy_rp::i2c::{self, Config};
+use embassy_rp::i2c::{Blocking, I2c};
+use embassy_rp::i2c;
 use embassy_rp::peripherals::I2C0;
-use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
-use embassy_sync::blocking_mutex::raw::NoopRawMutex;
+use embassy_sync::blocking_mutex::NoopMutex;
+use embassy_sync::blocking_mutex::raw::{CriticalSectionRawMutex, NoopRawMutex};
 use embassy_sync::blocking_mutex::raw::ThreadModeRawMutex;
 use embassy_sync::channel::Channel;
 use embassy_sync::mutex::Mutex;
 use embassy_sync::signal::Signal;
 use embassy_time::{Duration, Ticker, Timer};
-use gpio::{Input, Level, Output, Pull};
+use gpio::{Input, Pull};
 use is31fl3731_driver::IS31FL3731;
 use pcf8563::*;
-use shared_bus::I2cProxy;
-use shared_bus::NullMutex;
-use static_cell::make_static;
+use static_cell::{StaticCell};
 use {defmt_rtt as _, panic_probe as _};
 
-type StaticClockDisplay = ClockDisplay<I2cProxy<'static, NullMutex<I2c<'static, I2C0, Blocking>>>>;
-type StaticRtc =
-    Mutex<NoopRawMutex, PCF8563<I2cProxy<'static, NullMutex<I2c<'static, I2C0, Blocking>>>>>;
+type I2c0 = I2c<'static, I2C0, Blocking>;
+type I2cBus = NoopMutex<RefCell<I2c0>>;
+type StaticClockDisplay = ClockDisplay<I2c0>;
+type RtcDevice<'a> = PCF8563<I2cDevice<'a, NoopRawMutex, I2c0>>;
+
+static CURRENT_STATE: Mutex<CriticalSectionRawMutex, State> = Mutex::new(State::Idle);
+static CURRENT_TIME: Mutex<ThreadModeRawMutex, DateTime> = Mutex::new(default_datetime());
+
+const MAX_BRIGHTNESS_LEVEL: usize = 6;
+const BRIGHTNESS_MAP: [u8; MAX_BRIGHTNESS_LEVEL] = [0x05, 0x10, 0x20, 0x40, 0x60, 0x90];
+static CURRENT_BRIGHTNESS: Mutex<ThreadModeRawMutex, usize> = Mutex::new(3); // 0 - 6
+
+static EVENT_CHANNEL: Channel<ThreadModeRawMutex, Event, 10> = Channel::new();
+static SCREEN_REFRESH_SIGNAL: Signal<ThreadModeRawMutex, ScreenRefresh> = Signal::new();
+
+#[embassy_executor::main]
+async fn main(spawner: Spawner) {
+    let p = embassy_rp::init(Default::default());
+    
+    let mut config = i2c::Config::default();
+    config.frequency = 400_000;
+    static I2C_BUS: StaticCell<NoopMutex<RefCell<I2c<I2C0, Blocking>>>> = StaticCell::new();
+    let i2c = I2c::new_blocking(p.I2C0, p.PIN_29, p.PIN_28, i2c::Config::default());
+    let i2c_bus = NoopMutex::new(RefCell::new(i2c));
+    let i2c_bus = I2C_BUS.init(i2c_bus);
+    
+    unwrap!(spawner.spawn(rtc_task(i2c_bus)));
+    unwrap!(spawner.spawn(run_time()));
+    Timer::after(Duration::from_millis(10)).await;
+    unwrap!(spawner.spawn(screen_update(i2c_bus)));
+
+    unwrap!(spawner.spawn(button1_task(p.PIN_2.degrade())));
+    unwrap!(spawner.spawn(button2_task(p.PIN_3.degrade())));
+    unwrap!(spawner.spawn(blink_task()));
+    // unwrap!(spawner.spawn(process_events(i2c_bus)));
+
+    info!("Init OK");
+}
+
 
 #[embassy_executor::task]
-async fn screen_update(mut clock: StaticClockDisplay) {
+async fn screen_update(i2c_bus: &'static I2cBus) {
+    
+    // let leds1 = IS31FL3731::new(shared_i2c.acquire_i2c(), 0x76);
+    let i2c_dev2 = I2cDevice::new(i2c_bus);
+    let leds2 = IS31FL3731::new(i2c_dev2, 0x74);
+    let mut clock = ClockDisplay::new([Some(leds2), None, None]);
+    // let mut clock = ClockDisplay::new([Some(leds1), Some(leds2), None]);
+    clock.setup().unwrap();
+    
     let mut blink: Option<BlinkData> = None;
 
     loop {
@@ -89,10 +131,15 @@ async fn screen_update(mut clock: StaticClockDisplay) {
 }
 
 #[embassy_executor::task]
-async fn sync_time(rtc: &'static StaticRtc) {
+async fn rtc_task(i2c_bus: &'static I2cBus) {
+    let i2c_dev = I2cDevice::new(i2c_bus);
+    let mut rtc = PCF8563::new(i2c_dev);
+    rtc.rtc_init().unwrap();
+    rtc.control_clkout(Control::Off).unwrap();
+    info!("RTC init OK");
+    
     loop {
         let synced_time = {
-            let mut rtc = rtc.lock().await;
             rtc.get_datetime().unwrap()
         };
 
@@ -101,7 +148,10 @@ async fn sync_time(rtc: &'static StaticRtc) {
             *time = synced_time;
         }
 
-        Timer::after(Duration::from_secs(60 * 10)).await;
+        match select(Timer::after(Duration::from_secs(60 * 10)), EVENT_CHANNEL.receive()).await {
+            Either::First(_) => {}
+            Either::Second(event) => on_event(event, &mut rtc).await
+        };
     }
 }
 
@@ -136,7 +186,7 @@ async fn led_numbers_test(mut clock: StaticClockDisplay) {
     }
 }
 
-async fn wait_for_low_debounced(button: &mut Input<'_, AnyPin>) {
+async fn wait_for_low_debounced(button: &mut Input<'_>) {
     loop {
         button.wait_for_low().await;
         let b = select(
@@ -166,7 +216,7 @@ enum ButtonPress {
     Long,
 }
 
-async fn on_event(event: Event, rtc: &'static StaticRtc) {
+async fn on_event(event: Event, rtc: &mut RtcDevice<'_>) {
     let state = { CURRENT_STATE.lock().await.clone() };
 
     match (event, state) {
@@ -199,8 +249,8 @@ async fn on_event(event: Event, rtc: &'static StaticRtc) {
     }
 }
 
-async fn advance_time(position: u8, rtc: &'static StaticRtc) {
-    let mut rtc = rtc.lock().await;
+async fn advance_time(position: u8, rtc: &mut RtcDevice<'_>) {
+    // let mut rtc = rtc.lock().await;
     let mut current = rtc.get_datetime().unwrap();
     let defaut = default_datetime();
 
@@ -301,14 +351,7 @@ async fn button2_task(button_pin: AnyPin) {
     }
 }
 
-#[embassy_executor::task]
-async fn process_events(rtc: &'static StaticRtc) {
-    loop {
-        let event = EVENT_CHANNEL.recv().await;
-        info!("Event: {}", event);
-        on_event(event, rtc).await;
-    }
-}
+
 
 #[embassy_executor::task]
 async fn run_time() {
@@ -375,47 +418,3 @@ const fn default_datetime() -> DateTime {
     }
 }
 
-static CURRENT_STATE: Mutex<CriticalSectionRawMutex, State> = Mutex::new(State::Idle);
-static CURRENT_TIME: Mutex<ThreadModeRawMutex, DateTime> = Mutex::new(default_datetime());
-
-const MAX_BRIGHTNESS_LEVEL: usize = 6;
-const BRIGHTNESS_MAP: [u8; MAX_BRIGHTNESS_LEVEL] = [0x05, 0x10, 0x20, 0x40, 0x60, 0x90];
-static CURRENT_BRIGHTNESS: Mutex<ThreadModeRawMutex, usize> = Mutex::new(3); // 0 - 6
-
-static EVENT_CHANNEL: Channel<ThreadModeRawMutex, Event, 10> = Channel::new();
-static SCREEN_REFRESH_SIGNAL: Signal<ThreadModeRawMutex, ScreenRefresh> = Signal::new();
-
-#[embassy_executor::main]
-async fn main(spawner: Spawner) {
-    info!("Start");
-
-    let p = embassy_rp::init(Default::default());
-
-    let mut config = Config::default();
-    config.frequency = 400_000;
-    let sda = p.PIN_28;
-    let scl = p.PIN_29;
-    let i2c = i2c::I2c::new_blocking(p.I2C0, scl, sda, config);
-    let shared_i2c = make_static!(shared_bus::BusManagerSimple::new(i2c));
-
-    let leds1 = IS31FL3731::new(shared_i2c.acquire_i2c(), 0x76);
-    let leds2 = IS31FL3731::new(shared_i2c.acquire_i2c(), 0x74);
-    let mut clock = ClockDisplay::new([Some(leds1), Some(leds2), None]);
-    clock.setup().unwrap();
-
-    let mut rtc = PCF8563::new(shared_i2c.acquire_i2c());
-    rtc.rtc_init().unwrap();
-    rtc.control_clkout(Control::Off).unwrap();
-
-    let rtc = make_static!(Mutex::new(rtc));
-
-    unwrap!(spawner.spawn(sync_time(rtc)));
-    unwrap!(spawner.spawn(run_time()));
-    Timer::after(Duration::from_millis(10)).await;
-    unwrap!(spawner.spawn(screen_update(clock)));
-
-    unwrap!(spawner.spawn(button1_task(p.PIN_2.degrade())));
-    unwrap!(spawner.spawn(button2_task(p.PIN_3.degrade())));
-    unwrap!(spawner.spawn(blink_task()));
-    unwrap!(spawner.spawn(process_events(rtc)));
-}

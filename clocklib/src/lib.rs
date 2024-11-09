@@ -1,8 +1,7 @@
 #![no_std]
 
 use bitvec::prelude::*;
-use core::fmt::Debug;
-use embedded_hal::blocking::i2c;
+use embedded_hal::i2c;
 use is31fl3731_driver::{Error, IS31FL3731};
 
 pub struct ClockDisplay<I2C> {
@@ -106,7 +105,7 @@ const DIGITS: [Symbol; 10] = [
     }, // 9
 ];
 
-const PROGRESS_LTR: [Symbol; 6] = [
+pub const PROGRESS_LTR: [Symbol; 6] = [
     Symbol {
         mask: [0x10, 0x4, 0x10, 0x10, 0x4, 0x0],
     },
@@ -127,16 +126,15 @@ const PROGRESS_LTR: [Symbol; 6] = [
     },
 ];
 
-impl<I2C, E> ClockDisplay<I2C>
+impl<I2C> ClockDisplay<I2C>
 where
-    E: Debug,
-    I2C: i2c::Read<Error = E> + i2c::Write<Error = E>,
+    I2C: i2c::I2c,
 {
     pub fn new(drivers: [Option<IS31FL3731<I2C>>; 3]) -> ClockDisplay<I2C> {
         ClockDisplay { drivers }
     }
 
-    pub fn setup(&mut self) -> Result<(), Error<E>> {
+    pub fn setup(&mut self) -> Result<(), Error<I2C::Error>> {
         for driver in self.drivers.iter_mut().flatten() {
             driver.setup()?;
             driver.enable_leds(&[128, 135, 136, 143])?;
@@ -150,7 +148,7 @@ where
         sub_display: u8,
         segment_id: usize,
         color: u8,
-    ) -> Result<(), Error<E>> {
+    ) -> Result<(), Error<I2C::Error>> {
         assert!(sub_display < 6);
 
         let segment = &SEGMENTS[segment_id];
@@ -172,7 +170,7 @@ where
         sub_display: u8,
         symbol_id: usize,
         color: u8,
-    ) -> Result<(), Error<E>> {
+    ) -> Result<(), Error<I2C::Error>> {
         assert!(sub_display < 4);
 
         let symbol = &DIGITS[symbol_id];
