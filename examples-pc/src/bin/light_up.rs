@@ -1,5 +1,5 @@
 use ftdi_embedded_hal as hal;
-use ftdi_embedded_hal::eh0::prelude::_embedded_hal_blocking_i2c_Write;
+use ftdi_embedded_hal::eh1::i2c::I2c;
 use libftd2xx::{self as ftdi};
 
 fn main() {

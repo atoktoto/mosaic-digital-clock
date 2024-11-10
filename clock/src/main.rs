@@ -1,11 +1,8 @@
 #![no_std]
 #![no_main]
 
-mod is31fl3731;
-mod display;
-
 use core::cell::RefCell;
-use crate::display::ClockDisplay;
+
 use defmt::*;
 use embassy_embedded_hal::shared_bus::blocking::i2c::I2cDevice;
 use embassy_executor::Spawner;
@@ -28,7 +25,8 @@ use gpio::{Input, Pull};
 use pcf8563::*;
 use static_cell::{StaticCell};
 use {defmt_rtt as _, panic_probe as _};
-use crate::is31fl3731::IS31FL3731;
+use clock_logic::display::ClockDisplay;
+use clock_logic::is31fl3731::IS31FL3731;
 
 type I2c0 = I2c<'static, I2C0, Blocking>;
 type I2cBus = NoopMutex<RefCell<I2c0>>;

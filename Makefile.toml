@@ -1,0 +1,20 @@
+[tasks.build]
+clear = true
+dependencies = [
+    { name = "build", path = "clock"},
+    { name = "build", path = "clock-logic"},
+    { name = "build", path = "examples-pc"},
+]
+
+[tasks.clean]
+clear = true
+dependencies = [
+    { name = "clean", path = "clock"},
+    { name = "clean", path = "clock-logic"},
+    { name = "clean", path = "examples-pc"},
+]
+
+[tasks.run]
+dependencies = [
+    { name = "run", path = "clock"}
+]

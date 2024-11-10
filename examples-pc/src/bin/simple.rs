@@ -2,7 +2,7 @@ use std::thread::sleep;
 use std::time::Duration;
 use ftdi_embedded_hal as hal;
 use libftd2xx::{self as ftdi};
-use is31fl3731_driver::IS31FL3731;
+use clock_logic::is31fl3731::IS31FL3731;
 
 fn main() {
     let devices = ftdi::list_devices().expect("failed to list devices");

@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+clock-logic = { path = "../clock-logic"}
 pcf8563 = "0.1.2"
 
 embassy-embedded-hal = { version = "0.2.0", features = ["defmt"] }

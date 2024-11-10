@@ -18,7 +18,13 @@ From source:
 
 `cargo install probe-rs-tools --locked`
 
+### cargo-make
+
+`cargo install cargo-make --locked`
+
 ## Upload
 
-`cd clock`
-`cargo run`
+Calling cargo:
+`cd clock` `cargo run`
+
+Through cargo-make: `cargo make run`

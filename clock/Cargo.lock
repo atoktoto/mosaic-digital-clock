@@ -124,6 +124,7 @@ name = "clock"
 version = "0.1.0"
 dependencies = [
  "bitvec",
+ "clock-logic",
  "cortex-m",
  "cortex-m-rt",
  "defmt",
@@ -139,6 +140,14 @@ dependencies = [
  "pcf8563",
  "portable-atomic",
  "static_cell",
+]
+
+[[package]]
+name = "clock-logic"
+version = "0.1.0"
+dependencies = [
+ "bitvec",
+ "embedded-hal 1.0.0",
 ]
 
 [[package]]
