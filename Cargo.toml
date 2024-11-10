@@ -1,7 +1,0 @@
-[workspace]
-members = [
-    "is31fl3731-driver",
-    "clocklib",
-    "clock"
-]
-resolver = "2"

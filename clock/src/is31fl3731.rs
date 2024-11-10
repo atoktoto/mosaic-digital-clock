@@ -1,5 +1,3 @@
-#![no_std]
-
 use bitvec::prelude::*;
 use embedded_hal::i2c;
 
@@ -12,7 +10,7 @@ impl<I2C> IS31FL3731<I2C>
 where
     I2C: i2c::I2c,
 {
-    
+
     pub fn new(i2c: I2C, address: u8) -> IS31FL3731<I2C> {
         IS31FL3731 { i2c, address }
     }

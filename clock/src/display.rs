@@ -1,8 +1,8 @@
-#![no_std]
+
 
 use bitvec::prelude::*;
 use embedded_hal::i2c;
-use is31fl3731_driver::{Error, IS31FL3731};
+use crate::is31fl3731::{Error, IS31FL3731};
 
 pub struct ClockDisplay<I2C> {
     pub drivers: [Option<IS31FL3731<I2C>>; 3],
