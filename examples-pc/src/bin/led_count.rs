@@ -1,9 +1,9 @@
+use clock_display_lib::is31fl3731::IS31FL3731;
+use ftdi_embedded_hal as hal;
+use libftd2xx::{self as ftdi};
 use std::io::stdin;
 use std::thread::sleep;
 use std::time::Duration;
-use ftdi_embedded_hal as hal;
-use libftd2xx::{self as ftdi};
-use clock_logic::is31fl3731::IS31FL3731;
 
 fn main() {
     let devices = ftdi::list_devices().expect("failed to list devices");

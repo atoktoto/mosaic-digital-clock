@@ -124,7 +124,7 @@ name = "clock"
 version = "0.1.0"
 dependencies = [
  "bitvec",
- "clock-logic",
+ "clock-display-lib",
  "cortex-m",
  "cortex-m-rt",
  "defmt",
@@ -136,6 +136,7 @@ dependencies = [
  "embassy-sync",
  "embassy-time",
  "embedded-hal 1.0.0",
+ "heapless",
  "panic-probe",
  "pcf8563",
  "portable-atomic",
@@ -143,11 +144,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "clock-logic"
+name = "clock-display-lib"
 version = "0.1.0"
 dependencies = [
  "bitvec",
  "embedded-hal 1.0.0",
+ "heapless",
 ]
 
 [[package]]

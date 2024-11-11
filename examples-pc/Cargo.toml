@@ -6,4 +6,5 @@ edition = "2021"
 [dependencies]
 ftdi-embedded-hal = { version = "0.22.0", features = ["libftd2xx-static"] }
 libftd2xx = { version = "0.32.0", features = ['static'] }
-clock-logic = { path = "../clock-logic" }
+clock-display-lib = { path = "../clock-display-lib" }
+heapless = "0.8.0"

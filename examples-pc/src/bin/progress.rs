@@ -1,9 +1,10 @@
+use clock_display_lib::display::{ClockDisplay, SEGMENTS};
+use clock_display_lib::is31fl3731::IS31FL3731;
 use ftdi_embedded_hal as hal;
+use heapless::Vec;
 use libftd2xx::{self as ftdi};
 use std::thread::sleep;
 use std::time::Duration;
-use clock_logic::display::{ClockDisplay, SEGMENTS};
-use clock_logic::is31fl3731::IS31FL3731;
 
 fn main() {
     let devices = ftdi::list_devices().expect("failed to list devices");
@@ -13,7 +14,9 @@ fn main() {
     let i2c = hal.i2c().unwrap();
 
     let leds = IS31FL3731::new(i2c, 0x74);
-    let mut clock = ClockDisplay::new([Some(leds), None, None]);
+    let mut v = Vec::new();
+    _ = v.push(leds);
+    let mut clock = ClockDisplay::new(v);
 
     for segment in 0..SEGMENTS.len() {
         clock.draw_segment(0, segment, 0xFF).unwrap();

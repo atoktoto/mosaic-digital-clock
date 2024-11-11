@@ -1,8 +1,8 @@
-use std::thread::sleep;
-use std::time::Duration;
+use clock_display_lib::is31fl3731::IS31FL3731;
 use ftdi_embedded_hal as hal;
 use libftd2xx::{self as ftdi};
-use clock_logic::is31fl3731::IS31FL3731;
+use std::thread::sleep;
+use std::time::Duration;
 
 fn main() {
     let devices = ftdi::list_devices().expect("failed to list devices");
@@ -24,7 +24,7 @@ fn main() {
     for _ in 0..4 {
         for i in 0..143 {
             leds.set_color_byte(i, 0x00).unwrap();
-            leds.set_color_byte(i+1, 0xFF).unwrap();
+            leds.set_color_byte(i + 1, 0xFF).unwrap();
             sleep(Duration::from_millis(20));
         }
     }

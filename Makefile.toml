@@ -2,7 +2,7 @@
 clear = true
 dependencies = [
     { name = "build", path = "clock"},
-    { name = "build", path = "clock-logic"},
+    { name = "build", path = "clock-display-lib"},
     { name = "build", path = "examples-pc"},
 ]
 
@@ -10,8 +10,16 @@ dependencies = [
 clear = true
 dependencies = [
     { name = "clean", path = "clock"},
-    { name = "clean", path = "clock-logic"},
+    { name = "clean", path = "clock-display-lib"},
     { name = "clean", path = "examples-pc"},
+]
+
+[tasks.format]
+clear = true
+dependencies = [
+    { name = "format", path = "clock"},
+    { name = "format", path = "clock-display-lib"},
+    { name = "format", path = "examples-pc"},
 ]
 
 [tasks.run]

@@ -10,7 +10,6 @@ impl<I2C> IS31FL3731<I2C>
 where
     I2C: i2c::I2c,
 {
-
     pub fn new(i2c: I2C, address: u8) -> IS31FL3731<I2C> {
         IS31FL3731 { i2c, address }
     }
@@ -56,16 +55,14 @@ where
     }
 
     pub fn select_page(&mut self, bank: u8) -> Result<(), Error<I2C::Error>> {
-        self.i2c
-            .write(self.address, &[addresses::BANK_ADDRESS, bank])?;
+        self.i2c.write(self.address, &[addresses::BANK_ADDRESS, bank])?;
         Ok(())
     }
 
     pub fn shutdown(&mut self, shutdown: bool) -> Result<(), Error<I2C::Error>> {
         self.select_page(addresses::CONFIG_BANK)?;
         let value = if shutdown { 0x00 } else { 0xff };
-        self.i2c
-            .write(self.address, &[config_registers::SHUTDOWN, value])?;
+        self.i2c.write(self.address, &[config_registers::SHUTDOWN, value])?;
         Ok(())
     }
 

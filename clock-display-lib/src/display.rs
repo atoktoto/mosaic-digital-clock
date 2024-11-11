@@ -1,11 +1,17 @@
-
-
-use bitvec::prelude::*;
-use embedded_hal::i2c;
 use crate::is31fl3731::{Error, IS31FL3731};
+use bitvec::prelude::*;
+use core::ops::RangeInclusive;
+use embedded_hal::i2c;
+use heapless::Vec;
+
+pub const MAX_BRIGHTNESS_LEVEL: usize = 6;
+pub const BRIGHTNESS_MAP: [u8; MAX_BRIGHTNESS_LEVEL] = [0x05, 0x10, 0x20, 0x40, 0x60, 0x90]; //TODO move to lib
+
+pub const DISPLAY_ADDRESS_RANGE: RangeInclusive<u8> = 0x74..=0x77u8;
+pub const DISPLAY_ADDRESS_RANGE_CNT: usize = 4;
 
 pub struct ClockDisplay<I2C> {
-    pub drivers: [Option<IS31FL3731<I2C>>; 3],
+    pub drivers: Vec<IS31FL3731<I2C>, 4>,
 }
 
 pub struct Segment {
@@ -35,12 +41,8 @@ pub const SEGMENTS: [Segment; 44] = [
     Segment { leds: &[68] },
     Segment { leds: &[54] }, // 20
     Segment { leds: &[32, 48] },
-    Segment {
-        leds: &[65, 66, 82],
-    },
-    Segment {
-        leds: &[69, 70, 85],
-    },
+    Segment { leds: &[65, 66, 82] },
+    Segment { leds: &[69, 70, 85] },
     Segment { leds: &[39, 55] },
     Segment { leds: &[81] },
     Segment { leds: &[83] },
@@ -58,14 +60,10 @@ pub const SEGMENTS: [Segment; 44] = [
     Segment { leds: &[116] },
     Segment { leds: &[117, 118] },
     Segment { leds: &[87] }, // 40
-    Segment {
-        leds: &[96, 129, 130],
-    },
+    Segment { leds: &[96, 129, 130] },
     Segment { leds: &[112, 131] },
     Segment { leds: &[119, 132] },
-    Segment {
-        leds: &[103, 133, 134],
-    },
+    Segment { leds: &[103, 133, 134] },
 ];
 
 pub struct Symbol {
@@ -130,49 +128,34 @@ impl<I2C> ClockDisplay<I2C>
 where
     I2C: i2c::I2c,
 {
-    pub fn new(drivers: [Option<IS31FL3731<I2C>>; 3]) -> ClockDisplay<I2C> {
+    pub fn new(drivers: Vec<IS31FL3731<I2C>, 4>) -> ClockDisplay<I2C> {
         ClockDisplay { drivers }
     }
 
     pub fn setup(&mut self) -> Result<(), Error<I2C::Error>> {
-        for driver in self.drivers.iter_mut().flatten() {
+        for driver in self.drivers.iter_mut() {
             driver.setup()?;
             driver.enable_leds(&[128, 135, 136, 143])?;
         }
-
         Ok(())
     }
 
-    pub fn draw_segment(
-        &mut self,
-        sub_display: u8,
-        segment_id: usize,
-        color: u8,
-    ) -> Result<(), Error<I2C::Error>> {
-        assert!(sub_display < 6);
-
+    pub fn draw_segment(&mut self, sub_display: u8, segment_id: usize, color: u8) -> Result<(), Error<I2C::Error>> {
         let segment = &SEGMENTS[segment_id];
-        let driver_no = sub_display / 2;
+        let driver_no = (sub_display / 2) as usize;
         let sub_display = sub_display % 2;
 
-        for &led in segment.leds {
-            let driver = &mut self.drivers[driver_no as usize];
+        for led in segment.leds {
+            let driver = self.drivers.get_mut(driver_no);
             if let Some(driver) = driver {
-                driver.set_color_byte(led + 8 * sub_display, color).unwrap();
+                driver.set_color_byte(led + 8 * sub_display, color)?;
             }
         }
 
         Ok(())
     }
 
-    pub fn draw_symbol(
-        &mut self,
-        sub_display: u8,
-        symbol_id: usize,
-        color: u8,
-    ) -> Result<(), Error<I2C::Error>> {
-        assert!(sub_display < 4);
-
+    pub fn draw_symbol(&mut self, sub_display: u8, symbol_id: usize, color: u8) -> Result<(), Error<I2C::Error>> {
         let symbol = &DIGITS[symbol_id];
         let bits = symbol.mask.view_bits::<Lsb0>();
         for (i, bit) in bits.iter().enumerate() {
