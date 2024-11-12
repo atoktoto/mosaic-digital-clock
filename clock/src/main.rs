@@ -9,12 +9,13 @@ use clock_display_lib::display::{ClockDisplay, BRIGHTNESS_MAP, DISPLAY_ADDRESS_R
 use clock_display_lib::is31fl3731::IS31FL3731;
 use core::cell::RefCell;
 use core::iter::Iterator;
+use cortex_m_rt::entry;
 use defmt::*;
 use embassy_embedded_hal::shared_bus::blocking::i2c::I2cDevice;
-use embassy_executor::Spawner;
+use embassy_executor::{Executor, InterruptExecutor, Spawner};
 use embassy_futures::select::select;
 use embassy_futures::select::Either;
-use embassy_rp::gpio;
+use embassy_rp::{gpio, interrupt};
 use embassy_rp::gpio::AnyPin;
 use embassy_rp::gpio::Pin;
 use embassy_rp::i2c;
@@ -23,6 +24,7 @@ use embassy_rp::peripherals::I2C0;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::blocking_mutex::Mutex;
 use embassy_sync::channel::Channel;
+use embassy_sync::pubsub::PubSubChannel;
 use embassy_time::{Duration, Ticker, Timer};
 use gpio::{Input, Pull};
 use heapless::Vec;
@@ -40,11 +42,26 @@ type I2c0Device<'a> = I2cDevice<'a, RawMutex, I2c0>;
 type RtcChip<'a> = PCF8563<I2c0Device<'a>>;
 type DisplayChip<'a> = IS31FL3731<I2c0Device<'a>>;
 
+//TODO migrate to pubsub?
 static STATE_INPUT_CHANNEL: Channel<RawMutex, InputEvent, 32> = Channel::new();
-static STATE_OUTPUT_CHANNEL: Channel<RawMutex, OutputEvents, 32> = Channel::new();
+static STATE_OUTPUT_CHANNEL: PubSubChannel<RawMutex, OutputEvents, 32, 32, 32> = PubSubChannel::new();
 
-#[embassy_executor::main]
-async fn main(spawner: Spawner) {
+static EXECUTOR_HIGH: InterruptExecutor = InterruptExecutor::new();
+static EXECUTOR_MED: InterruptExecutor = InterruptExecutor::new();
+static EXECUTOR_LOW: StaticCell<Executor> = StaticCell::new();
+
+#[interrupt]
+unsafe fn SWI_IRQ_1() {
+    EXECUTOR_HIGH.on_interrupt()
+}
+
+#[interrupt]
+unsafe fn SWI_IRQ_0() {
+    EXECUTOR_MED.on_interrupt()
+}
+
+#[entry]
+fn main() -> ! {
     let p = embassy_rp::init(Default::default());
 
     let mut config = i2c::Config::default();
@@ -54,16 +71,27 @@ async fn main(spawner: Spawner) {
     let i2c_bus = Mutex::new(RefCell::new(i2c));
     let i2c_bus = I2C_BUS.init(i2c_bus);
 
-    unwrap!(spawner.spawn(rtc_task(i2c_bus)));
-    unwrap!(spawner.spawn(tick_every_second()));
-    unwrap!(spawner.spawn(button_task(p.PIN_2.degrade(), Button::Adjust)));
-    unwrap!(spawner.spawn(button_task(p.PIN_3.degrade(), Button::Select)));
-    unwrap!(spawner.spawn(blink_task()));
-    unwrap!(spawner.spawn(run_state_machine()));
-    unwrap!(spawner.spawn(display_update_task(i2c_bus)));
+    {   // HIGH priority
+        let spawner = EXECUTOR_HIGH.start(interrupt::SWI_IRQ_1);
+        unwrap!(spawner.spawn(run_state_machine()));
+        unwrap!(spawner.spawn(tick_every_second()));
+    }
 
-    STATE_OUTPUT_CHANNEL.send(OutputEvents::TriggerRTCSync).await;
+    {   // MID priority
+        let spawner = EXECUTOR_MED.start(interrupt::SWI_IRQ_0);
+        unwrap!(spawner.spawn(button_task(p.PIN_2.degrade(), Button::Adjust)));
+        unwrap!(spawner.spawn(button_task(p.PIN_3.degrade(), Button::Select)));
+    }
+
+    // STATE_OUTPUT_CHANNEL.send(OutputEvents::TriggerRTCSync).await;
     info!("Init OK");
+
+    EXECUTOR_LOW.init(Executor::new()).run(|spawner| {
+        // LOW priority
+        unwrap!(spawner.spawn(display_update_task(i2c_bus)));
+        unwrap!(spawner.spawn(rtc_task(i2c_bus)));
+        unwrap!(spawner.spawn(blink_task()));
+    });
 }
 
 /// This task owns [ClockState] end executes state transitions triggered by [InputEvent]s.
@@ -71,6 +99,7 @@ async fn main(spawner: Spawner) {
 async fn run_state_machine() {
     let mut state = ClockState::new();
     let input_receiver = STATE_INPUT_CHANNEL.receiver();
+    let output_sender = STATE_OUTPUT_CHANNEL.publisher().unwrap();
 
     loop {
         let input = input_receiver.receive().await;
@@ -86,7 +115,7 @@ async fn run_state_machine() {
                     error!("Invalid state transition: {:?} + {:?}", state, event);
                 }
                 output => {
-                    STATE_OUTPUT_CHANNEL.send(output).await;
+                    output_sender.publish(output).await;
                 }
             }
         }
@@ -95,7 +124,7 @@ async fn run_state_machine() {
 
 #[embassy_executor::task]
 async fn display_update_task(i2c_bus: &'static I2c0Bus) {
-    let state_receiver = STATE_OUTPUT_CHANNEL.receiver();
+    let mut state_receiver = STATE_OUTPUT_CHANNEL.subscriber().unwrap();
 
     loop {
         let modules = DISPLAY_ADDRESS_RANGE
@@ -112,7 +141,7 @@ async fn display_update_task(i2c_bus: &'static I2c0Bus) {
         clock.setup().unwrap();
 
         loop {
-            let output = state_receiver.receive().await;
+            let output = state_receiver.next_message_pure().await; //TODO
             let state = match output {
                 OutputEvents::UpdateDisplay(state) => state,
                 _ => continue,
@@ -155,7 +184,7 @@ async fn rtc_init(i2c_bus: &'static I2c0Bus) -> Result<RtcChip, I2cError> {
 
 #[embassy_executor::task]
 async fn rtc_task(i2c_bus: &'static I2c0Bus) {
-    let output_receiver = STATE_OUTPUT_CHANNEL.receiver();
+    let mut output_receiver = STATE_OUTPUT_CHANNEL.subscriber().unwrap();
     let input_sender = STATE_INPUT_CHANNEL.sender();
     let mut ticker = Ticker::every(Duration::from_secs(60 * 10));
 
@@ -174,7 +203,7 @@ async fn rtc_task(i2c_bus: &'static I2c0Bus) {
         };
 
         let err = loop {
-            let time = match select(ticker.next(), output_receiver.receive()).await {
+            let time = match select(ticker.next(), output_receiver.next_message_pure()).await {
                 Either::First(_timer) => None,
                 Either::Second(OutputEvents::TriggerRTCSync) => None,
                 Either::Second(OutputEvents::SetRTC(time)) => Some(time),
@@ -238,11 +267,18 @@ async fn rtc_task(i2c_bus: &'static I2c0Bus) {
 /// Emits [InputEvent::Blink] events. Restarts the timer on [OutputEvents::StartBlinking] event..
 #[embassy_executor::task]
 async fn blink_task() {
-    let event_receiver = STATE_OUTPUT_CHANNEL.receiver();
+    let mut event_receiver = STATE_OUTPUT_CHANNEL.subscriber().unwrap();
     let event_sender = STATE_INPUT_CHANNEL.sender();
+    let mut ticker = Ticker::every(Duration::from_millis(500));
 
     loop {
-        let _ = select(event_receiver.receive(), Timer::after(Duration::from_millis(500))).await;
+        match select(event_receiver.next_message_pure(), ticker.next()).await {
+            Either::First(OutputEvents::StartBlinking) => {
+                ticker.reset();
+            }
+            Either::First(_) => continue, //ignore event
+            Either::Second(_) => {}
+        }
         event_sender.send(InputEvent::Blink).await;
     }
 }
@@ -262,17 +298,18 @@ async fn tick_every_second() {
 #[embassy_executor::task(pool_size = 2)]
 async fn button_task(button_pin1: AnyPin, button: Button) {
     let mut button_input = Input::new(button_pin1, Pull::Up);
+    let input_sender = STATE_INPUT_CHANNEL.sender();
 
     loop {
         wait_for_low_debounced(&mut button_input).await;
         match select(button_input.wait_for_high(), Timer::after(Duration::from_secs(3))).await {
             Either::First(_) => {
-                STATE_INPUT_CHANNEL
+                input_sender
                     .send(InputEvent::ButtonEvent(button.clone(), ButtonAction::ShortPress))
                     .await;
             }
             Either::Second(_) => {
-                STATE_INPUT_CHANNEL
+                input_sender
                     .send(InputEvent::ButtonEvent(button.clone(), ButtonAction::LongPress))
                     .await;
                 button_input.wait_for_high().await;

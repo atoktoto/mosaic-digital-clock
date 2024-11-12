@@ -34,7 +34,7 @@ pub enum InputEvent {
     SetTimeFromRTC(DateTime),
 }
 
-#[derive(Format)]
+#[derive(Format, Clone)]
 pub enum OutputEvents {
     UpdateDisplay(ClockState),
     SetRTC(DateTime),
@@ -122,6 +122,7 @@ impl ClockState {
 
             // Finish time setting
             (State::SettingMinutes, InputEvent::ButtonEvent(Button::Select, _)) => {
+                self.display_dimmed = false;
                 set(State::Normal);
             }
 
