@@ -65,7 +65,7 @@ fn main() -> ! {
     let p = embassy_rp::init(Default::default());
 
     let mut config = i2c::Config::default();
-    config.frequency = 400_000;
+    config.frequency = 800_000;
     static I2C_BUS: StaticCell<I2c0Bus> = StaticCell::new();
     let i2c = I2c::new_blocking(p.I2C0, p.PIN_29, p.PIN_28, i2c::Config::default());
     let i2c_bus = Mutex::new(RefCell::new(i2c));
