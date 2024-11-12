@@ -43,12 +43,29 @@ pub enum OutputEvents {
     TriggerRTCSync,
 }
 
+#[derive(Format, Clone)]
+pub enum Dimmed {
+    None,
+    Hours,
+    Minutes,
+    Both,
+}
+
+impl Dimmed {
+    pub fn is_dimmed(&self) -> bool {
+        match self {
+            Dimmed::None => false,
+            Dimmed::Hours | Dimmed::Minutes | Dimmed::Both => true
+        }
+    }
+}
+
 #[derive(Clone, Format)]
 pub struct ClockState {
     pub state: State,
     pub time: DateTime,
     pub brightness_step: usize,
-    pub display_dimmed: bool,
+    pub dimming: Dimmed,
 }
 
 impl ClockState {
@@ -57,7 +74,7 @@ impl ClockState {
             state: State::Normal,
             time: DateTime::default(),
             brightness_step: 2,
-            display_dimmed: false,
+            dimming: Dimmed::None,
         }
     }
 
@@ -105,6 +122,7 @@ impl ClockState {
             (State::SettingHours, InputEvent::ButtonEvent(Button::Adjust, ButtonAction::ShortPress)) => {
                 self.time.advance_hours();
                 self.state = State::SettingHours;
+                self.dimming = Dimmed::Hours;
                 emit(OutputEvents::SetRTC(self.time.clone()));
                 emit(OutputEvents::UpdateDisplay(self.clone()));
             }
@@ -116,19 +134,32 @@ impl ClockState {
             (State::SettingMinutes, InputEvent::ButtonEvent(Button::Adjust, ButtonAction::ShortPress)) => {
                 self.time.advance_minutes();
                 self.state = State::SettingMinutes;
+                self.dimming = Dimmed::Minutes;
                 emit(OutputEvents::SetRTC(self.time.clone()));
                 emit(OutputEvents::UpdateDisplay(self.clone()));
             }
 
             // Finish time setting
             (State::SettingMinutes, InputEvent::ButtonEvent(Button::Select, _)) => {
-                self.display_dimmed = false;
+                self.dimming = Dimmed::None;
                 set(State::Normal);
             }
 
             // Blink screen when setting time
-            (State::SettingHours, InputEvent::Blink) | (State::SettingMinutes, InputEvent::Blink) => {
-                self.display_dimmed = !self.display_dimmed;
+            (State::SettingHours, InputEvent::Blink) => {
+                if self.dimming.is_dimmed() {
+                    self.dimming = Dimmed::None;
+                } else {
+                    self.dimming = Dimmed::Hours;
+                }
+                emit(OutputEvents::UpdateDisplay(self.clone()));
+            }
+            (State::SettingMinutes, InputEvent::Blink) => {
+                if self.dimming.is_dimmed() {
+                    self.dimming = Dimmed::None;
+                } else {
+                    self.dimming = Dimmed::Minutes;
+                }
                 emit(OutputEvents::UpdateDisplay(self.clone()));
             }
             (_, InputEvent::Blink) => {}

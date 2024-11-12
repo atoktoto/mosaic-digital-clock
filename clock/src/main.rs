@@ -4,7 +4,7 @@
 mod state;
 mod time;
 
-use crate::state::{Button, ButtonAction, ClockState, InputEvent, OutputEvents};
+use crate::state::{Button, ButtonAction, ClockState, Dimmed, InputEvent, OutputEvents};
 use clock_display_lib::display::{ClockDisplay, BRIGHTNESS_MAP, DISPLAY_ADDRESS_RANGE, DISPLAY_ADDRESS_RANGE_CNT};
 use clock_display_lib::is31fl3731::IS31FL3731;
 use core::cell::RefCell;
@@ -63,7 +63,6 @@ unsafe fn SWI_IRQ_0() {
 #[entry]
 fn main() -> ! {
     let p = embassy_rp::init(Default::default());
-
     let mut config = i2c::Config::default();
     config.frequency = 800_000;
     static I2C_BUS: StaticCell<I2c0Bus> = StaticCell::new();
@@ -82,16 +81,21 @@ fn main() -> ! {
         unwrap!(spawner.spawn(button_task(p.PIN_2.degrade(), Button::Adjust)));
         unwrap!(spawner.spawn(button_task(p.PIN_3.degrade(), Button::Select)));
     }
-
-    // STATE_OUTPUT_CHANNEL.send(OutputEvents::TriggerRTCSync).await;
-    info!("Init OK");
-
+    
     EXECUTOR_LOW.init(Executor::new()).run(|spawner| {
         // LOW priority
         unwrap!(spawner.spawn(display_update_task(i2c_bus)));
         unwrap!(spawner.spawn(rtc_task(i2c_bus)));
         unwrap!(spawner.spawn(blink_task()));
+        unwrap!(spawner.spawn(init()));
     });
+}
+
+#[embassy_executor::task]
+async fn init() {
+    Timer::after(Duration::from_millis(50)).await;
+    STATE_OUTPUT_CHANNEL.publisher().unwrap().publish(OutputEvents::TriggerRTCSync).await;
+    info!("Init complete");
 }
 
 /// This task owns [ClockState] end executes state transitions triggered by [InputEvent]s.
@@ -129,6 +133,7 @@ async fn display_update_task(i2c_bus: &'static I2c0Bus) {
     loop {
         let modules = DISPLAY_ADDRESS_RANGE
             .into_iter()
+            .rev() // For compatibility with prev hardware
             .map(|addr| {
                 let i2c_dev = I2cDevice::new(i2c_bus);
                 IS31FL3731::new(i2c_dev, addr)
@@ -149,13 +154,21 @@ async fn display_update_task(i2c_bus: &'static I2c0Bus) {
 
             info!("Display update: {}", &state);
 
-            let brightness = BRIGHTNESS_MAP[state.brightness_step];
+            let c = BRIGHTNESS_MAP[state.brightness_step];
             let time = state.time;
             let digits = time.time_as_digits();
-            let display_dimmed = state.display_dimmed;
-            let color = if display_dimmed { 0x02 } else { brightness };
+            
+            let display_dimmed = state.dimming;
+            let dc = 0x02;
+            
+            let colors = match display_dimmed {
+                Dimmed::None => [c; 6],
+                Dimmed::Hours => [dc, dc, c, c, c, c],
+                Dimmed::Minutes => [c,c,dc,dc,c,c],
+                Dimmed::Both => [dc; 6],
+            };
 
-            let r = draw_digits(&digits, color, &mut clock);
+            let r = draw_digits(&digits, &colors, &mut clock);
             if let Err(_) = r {
                 error!("I2cError");
                 break;
@@ -167,9 +180,9 @@ async fn display_update_task(i2c_bus: &'static I2c0Bus) {
 #[derive(Format)]
 struct I2cError;
 
-fn draw_digits(digits: &[usize; 6], color: u8, clock: &mut ClockDisplay<I2c0Device>) -> Result<(), I2cError> {
-    for (i, digit) in digits.iter().enumerate() {
-        clock.draw_symbol(i as u8, *digit, color).map_err(|_err| I2cError)?;
+fn draw_digits(digits: &[usize; 6], colors: &[u8; 6], clock: &mut ClockDisplay<I2c0Device>) -> Result<(), I2cError> {
+    for (i, (digit, color)) in digits.iter().zip(colors).enumerate() {
+        clock.draw_symbol(i as u8, *digit, *color).map_err(|_err| I2cError)?;
     }
     Ok(())
 }
@@ -217,7 +230,6 @@ async fn rtc_task(i2c_bus: &'static I2c0Bus) {
                         Ok(time) => time,
                         Err(err) => break err,
                     };
-
                     input_sender.send(InputEvent::SetTimeFromRTC(synced_time.into())).await;
                 }
                 Some(time) => {
@@ -290,7 +302,6 @@ async fn tick_every_second() {
 
     loop {
         event_sender.send(InputEvent::Tick).await;
-        info!("Tick");
         ticker.next().await;
     }
 }
