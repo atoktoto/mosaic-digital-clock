@@ -11,7 +11,6 @@ use core::cell::RefCell;
 use core::iter::Iterator;
 use defmt::*;
 use embassy_embedded_hal::shared_bus::blocking::i2c::I2cDevice;
-use embassy_embedded_hal::shared_bus::I2cDeviceError;
 use embassy_executor::Spawner;
 use embassy_futures::select::select;
 use embassy_futures::select::Either;
@@ -21,9 +20,8 @@ use embassy_rp::gpio::Pin;
 use embassy_rp::i2c;
 use embassy_rp::i2c::{Blocking, I2c};
 use embassy_rp::peripherals::I2C0;
-use embassy_sync::blocking_mutex::raw::{CriticalSectionRawMutex, NoopRawMutex};
-use embassy_sync::blocking_mutex::raw::ThreadModeRawMutex;
-use embassy_sync::blocking_mutex::{Mutex, NoopMutex};
+use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+use embassy_sync::blocking_mutex::Mutex;
 use embassy_sync::channel::Channel;
 use embassy_time::{Duration, Ticker, Timer};
 use gpio::{Input, Pull};
@@ -166,7 +164,6 @@ async fn rtc_init(i2c_bus: &'static I2c0Bus) -> Result<RtcChip, I2cError> {
 
 #[embassy_executor::task]
 async fn rtc_task(i2c_bus: &'static I2c0Bus) {
-
     let output_receiver = STATE_OUTPUT_CHANNEL.receiver();
     let input_sender = STATE_INPUT_CHANNEL.sender();
     let mut ticker = Ticker::every(Duration::from_secs(60 * 10));
@@ -177,7 +174,7 @@ async fn rtc_task(i2c_bus: &'static I2c0Bus) {
                 Ok(device) => {
                     info!("RTC init OK");
                     break device;
-                },
+                }
                 Err(err) => {
                     error!("RTC initialization failed: {}. Retrying", err);
                     continue;
