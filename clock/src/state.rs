@@ -56,7 +56,7 @@ impl ClockState {
         ClockState {
             state: State::Normal,
             time: DateTime::default(),
-            brightness_step: 0,
+            brightness_step: 2,
             display_dimmed: false,
         }
     }
@@ -90,9 +90,9 @@ impl ClockState {
 
             // Brightness
             (State::Normal, InputEvent::ButtonEvent(Button::Adjust, ButtonAction::ShortPress)) => {
-                self.brightness_step = self.brightness_step.clamp(0, MAX_BRIGHTNESS_LEVEL);
+                self.brightness_step = (self.brightness_step + 1) % MAX_BRIGHTNESS_LEVEL;
                 //TODO save brightness in EEPROM
-                self.state = State::Normal;
+                emit(OutputEvents::UpdateDisplay(self.clone()));
             }
 
             // Time setting

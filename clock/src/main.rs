@@ -74,16 +74,10 @@ async fn run_state_machine() {
 
     loop {
         let input = input_receiver.receive().await;
-        info!("Processing state");
 
         let (next_state, events) = state.update(input);
         if let Some(next_state) = next_state {
             info!("State change: {:?}", next_state);
-        }
-        if events.len() > 0 {
-            for event in &events {
-                info!("Out event: {:?}", event);
-            }
         }
 
         for event in events {
@@ -119,7 +113,6 @@ async fn display_update_task(i2c_bus: &'static I2c0Bus) {
 
         loop {
             let output = state_receiver.receive().await;
-            info!("Display update start");
             let state = match output {
                 OutputEvents::UpdateDisplay(state) => state,
                 _ => continue,
@@ -138,8 +131,6 @@ async fn display_update_task(i2c_bus: &'static I2c0Bus) {
                 error!("I2cError");
                 break;
             }
-
-            info!("Display finished");
         }
     }
 }
