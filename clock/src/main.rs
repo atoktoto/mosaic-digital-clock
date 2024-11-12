@@ -21,9 +21,9 @@ use embassy_rp::gpio::Pin;
 use embassy_rp::i2c;
 use embassy_rp::i2c::{Blocking, I2c};
 use embassy_rp::peripherals::I2C0;
-use embassy_sync::blocking_mutex::raw::NoopRawMutex;
+use embassy_sync::blocking_mutex::raw::{CriticalSectionRawMutex, NoopRawMutex};
 use embassy_sync::blocking_mutex::raw::ThreadModeRawMutex;
-use embassy_sync::blocking_mutex::NoopMutex;
+use embassy_sync::blocking_mutex::{Mutex, NoopMutex};
 use embassy_sync::channel::Channel;
 use embassy_time::{Duration, Ticker, Timer};
 use gpio::{Input, Pull};
@@ -32,15 +32,18 @@ use pcf8563::*;
 use static_cell::StaticCell;
 use {defmt_rtt as _, panic_probe as _};
 
+/// Locking method used across the codebase
+type RawMutex = CriticalSectionRawMutex;
+
 type I2c0 = I2c<'static, I2C0, Blocking>;
-type I2c0Bus = NoopMutex<RefCell<I2c0>>;
-type I2c0Device<'a> = I2cDevice<'a, NoopRawMutex, I2c0>;
+type I2c0Bus = Mutex<RawMutex, RefCell<I2c0>>;
+type I2c0Device<'a> = I2cDevice<'a, RawMutex, I2c0>;
 
 type RtcChip<'a> = PCF8563<I2c0Device<'a>>;
 type DisplayChip<'a> = IS31FL3731<I2c0Device<'a>>;
 
-static STATE_INPUT_CHANNEL: Channel<ThreadModeRawMutex, InputEvent, 32> = Channel::new();
-static STATE_OUTPUT_CHANNEL: Channel<ThreadModeRawMutex, OutputEvents, 32> = Channel::new();
+static STATE_INPUT_CHANNEL: Channel<RawMutex, InputEvent, 32> = Channel::new();
+static STATE_OUTPUT_CHANNEL: Channel<RawMutex, OutputEvents, 32> = Channel::new();
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
@@ -48,19 +51,18 @@ async fn main(spawner: Spawner) {
 
     let mut config = i2c::Config::default();
     config.frequency = 400_000;
-    static I2C_BUS: StaticCell<NoopMutex<RefCell<I2c<I2C0, Blocking>>>> = StaticCell::new();
+    static I2C_BUS: StaticCell<I2c0Bus> = StaticCell::new();
     let i2c = I2c::new_blocking(p.I2C0, p.PIN_29, p.PIN_28, i2c::Config::default());
-    let i2c_bus = NoopMutex::new(RefCell::new(i2c));
+    let i2c_bus = Mutex::new(RefCell::new(i2c));
     let i2c_bus = I2C_BUS.init(i2c_bus);
 
     unwrap!(spawner.spawn(rtc_task(i2c_bus)));
     unwrap!(spawner.spawn(tick_every_second()));
-    Timer::after(Duration::from_millis(10)).await;
-    unwrap!(spawner.spawn(display_update_task(i2c_bus)));
     unwrap!(spawner.spawn(button_task(p.PIN_2.degrade(), Button::Adjust)));
     unwrap!(spawner.spawn(button_task(p.PIN_3.degrade(), Button::Select)));
     unwrap!(spawner.spawn(blink_task()));
     unwrap!(spawner.spawn(run_state_machine()));
+    unwrap!(spawner.spawn(display_update_task(i2c_bus)));
 
     STATE_OUTPUT_CHANNEL.send(OutputEvents::TriggerRTCSync).await;
     info!("Init OK");
