@@ -11,6 +11,7 @@ use core::cell::RefCell;
 use core::iter::Iterator;
 use defmt::*;
 use embassy_embedded_hal::shared_bus::blocking::i2c::I2cDevice;
+use embassy_embedded_hal::shared_bus::I2cDeviceError;
 use embassy_executor::Spawner;
 use embassy_futures::select::select;
 use embassy_futures::select::Either;
@@ -38,8 +39,8 @@ type I2c0Device<'a> = I2cDevice<'a, NoopRawMutex, I2c0>;
 type RtcChip<'a> = PCF8563<I2c0Device<'a>>;
 type DisplayChip<'a> = IS31FL3731<I2c0Device<'a>>;
 
-static STATE_INPUT_CHANNEL: Channel<ThreadModeRawMutex, InputEvent, 10> = Channel::new();
-static STATE_OUTPUT_CHANNEL: Channel<ThreadModeRawMutex, OutputEvents, 10> = Channel::new();
+static STATE_INPUT_CHANNEL: Channel<ThreadModeRawMutex, InputEvent, 32> = Channel::new();
+static STATE_OUTPUT_CHANNEL: Channel<ThreadModeRawMutex, OutputEvents, 32> = Channel::new();
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
@@ -73,10 +74,16 @@ async fn run_state_machine() {
 
     loop {
         let input = input_receiver.receive().await;
+        info!("Processing state");
 
         let (next_state, events) = state.update(input);
         if let Some(next_state) = next_state {
             info!("State change: {:?}", next_state);
+        }
+        if events.len() > 0 {
+            for event in &events {
+                info!("Out event: {:?}", event);
+            }
         }
 
         for event in events {
@@ -112,10 +119,13 @@ async fn display_update_task(i2c_bus: &'static I2c0Bus) {
 
         loop {
             let output = state_receiver.receive().await;
+            info!("Display update start");
             let state = match output {
                 OutputEvents::UpdateDisplay(state) => state,
                 _ => continue,
             };
+
+            info!("Display update: {}", &state);
 
             let brightness = BRIGHTNESS_MAP[state.brightness_step];
             let time = state.time;
@@ -128,10 +138,13 @@ async fn display_update_task(i2c_bus: &'static I2c0Bus) {
                 error!("I2cError");
                 break;
             }
+
+            info!("Display finished");
         }
     }
 }
 
+#[derive(Format)]
 struct I2cError;
 
 fn draw_digits(digits: &[usize; 6], color: u8, clock: &mut ClockDisplay<I2c0Device>) -> Result<(), I2cError> {
@@ -141,37 +154,61 @@ fn draw_digits(digits: &[usize; 6], color: u8, clock: &mut ClockDisplay<I2c0Devi
     Ok(())
 }
 
-#[embassy_executor::task]
-async fn rtc_task(i2c_bus: &'static I2c0Bus) {
+async fn rtc_init(i2c_bus: &'static I2c0Bus) -> Result<RtcChip, I2cError> {
     let i2c_dev = I2cDevice::new(i2c_bus);
     let mut rtc: RtcChip = PCF8563::new(i2c_dev);
-    rtc.rtc_init().unwrap();
-    rtc.control_clkout(Control::Off).unwrap();
-    info!("RTC init OK");
+    rtc.rtc_init().map_err(|_err| I2cError)?;
+    rtc.control_clkout(Control::Off).map_err(|_err| I2cError)?;
+    Ok(rtc)
+}
+
+#[embassy_executor::task]
+async fn rtc_task(i2c_bus: &'static I2c0Bus) {
 
     let output_receiver = STATE_OUTPUT_CHANNEL.receiver();
     let input_sender = STATE_INPUT_CHANNEL.sender();
     let mut ticker = Ticker::every(Duration::from_secs(60 * 10));
 
     loop {
-        let time = match select(ticker.next(), output_receiver.receive()).await {
-            Either::First(_timer) => None,
-            Either::Second(OutputEvents::TriggerRTCSync) => None,
-            Either::Second(OutputEvents::SetRTC(time)) => Some(time),
-            _ => continue,
+        let mut rtc = loop {
+            match rtc_init(i2c_bus).await {
+                Ok(device) => {
+                    info!("RTC init OK");
+                    break device;
+                },
+                Err(err) => {
+                    error!("RTC initialization failed: {}. Retrying", err);
+                    continue;
+                }
+            }
         };
 
-        match time {
-            None => {
-                info!("RTC sync");
-                let synced_time = { rtc.get_datetime().unwrap() };
-                input_sender.send(InputEvent::SetTimeFromRTC(synced_time.into())).await;
+        let err = loop {
+            let time = match select(ticker.next(), output_receiver.receive()).await {
+                Either::First(_timer) => None,
+                Either::Second(OutputEvents::TriggerRTCSync) => None,
+                Either::Second(OutputEvents::SetRTC(time)) => Some(time),
+                _ => continue,
+            };
+
+            match time {
+                None => {
+                    info!("RTC sync");
+                    let synced_time = match rtc.get_datetime() {
+                        Ok(time) => time,
+                        Err(err) => break err,
+                    };
+
+                    input_sender.send(InputEvent::SetTimeFromRTC(synced_time.into())).await;
+                }
+                Some(time) => {
+                    info!("RTC set");
+                    rtc.set_datetime(&time.into()).unwrap()
+                }
             }
-            Some(time) => {
-                info!("RTC set");
-                rtc.set_datetime(&time.into()).unwrap()
-            }
-        }
+        };
+
+        error!("RTC error, reinitializing");
     }
 }
 
@@ -227,6 +264,7 @@ async fn tick_every_second() {
 
     loop {
         event_sender.send(InputEvent::Tick).await;
+        info!("Tick");
         ticker.next().await;
     }
 }

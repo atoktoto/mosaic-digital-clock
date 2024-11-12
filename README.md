@@ -28,3 +28,7 @@ Calling cargo:
 `cd clock` `cargo run`
 
 Through cargo-make: `cargo make run`
+
+## Debugging
+
+`probe-rs attach --chip RP2040 .\target\thumbv6m-none-eabi\debug\clock`
