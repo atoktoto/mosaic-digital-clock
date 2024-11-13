@@ -6,6 +6,7 @@ mod time;
 
 #[cfg(feature = "display-test")]
 mod display_test;
+mod flash;
 
 #[cfg(feature = "display-test")]
 use crate::display_test::display_test;
@@ -22,11 +23,12 @@ use embassy_executor::{Executor, InterruptExecutor, Spawner};
 use embassy_futures::select::select;
 use embassy_futures::select::Either;
 use embassy_rp::{gpio, interrupt};
+use embassy_rp::flash::{Async, Flash, ERASE_SIZE};
 use embassy_rp::gpio::AnyPin;
 use embassy_rp::gpio::Pin;
 use embassy_rp::i2c;
 use embassy_rp::i2c::{Blocking, I2c};
-use embassy_rp::peripherals::I2C0;
+use embassy_rp::peripherals::{FLASH, I2C0};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::blocking_mutex::Mutex;
 use embassy_sync::channel::Channel;
@@ -37,6 +39,7 @@ use heapless::Vec;
 use pcf8563::*;
 use static_cell::StaticCell;
 use {defmt_rtt as _, panic_probe as _};
+use crate::flash::{read, write, FlashData, RpFlash};
 
 /// Locking method used across the codebase
 type RawMutex = CriticalSectionRawMutex;
@@ -47,6 +50,8 @@ type I2c0Device<'a> = I2cDevice<'a, RawMutex, I2c0>;
 
 type RtcChip<'a> = PCF8563<I2c0Device<'a>>;
 type DisplayChip<'a> = IS31FL3731<I2c0Device<'a>>;
+
+
 
 //TODO migrate to pubsub?
 static STATE_INPUT_CHANNEL: Channel<RawMutex, InputEvent, 32> = Channel::new();
@@ -70,6 +75,9 @@ unsafe fn SWI_IRQ_0() {
 #[entry]
 fn main() -> ! {
     let p = embassy_rp::init(Default::default());
+
+    let flash: RpFlash = embassy_rp::flash::Flash::new(p.FLASH, p.DMA_CH0);
+
     let mut config = i2c::Config::default();
     config.frequency = 800_000;
     static I2C_BUS: StaticCell<I2c0Bus> = StaticCell::new();
