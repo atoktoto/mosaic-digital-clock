@@ -4,6 +4,12 @@
 mod state;
 mod time;
 
+#[cfg(feature = "display-test")]
+mod display_test;
+
+#[cfg(feature = "display-test")]
+use crate::display_test::display_test;
+
 use crate::state::{Button, ButtonAction, ClockState, Dimmed, InputEvent, OutputEvents};
 use clock_display_lib::display::{ClockDisplay, BRIGHTNESS_MAP, DISPLAY_ADDRESS_RANGE, DISPLAY_ADDRESS_RANGE_CNT};
 use clock_display_lib::is31fl3731::IS31FL3731;
@@ -60,6 +66,7 @@ unsafe fn SWI_IRQ_0() {
     EXECUTOR_MED.on_interrupt()
 }
 
+
 #[entry]
 fn main() -> ! {
     let p = embassy_rp::init(Default::default());
@@ -70,25 +77,37 @@ fn main() -> ! {
     let i2c_bus = Mutex::new(RefCell::new(i2c));
     let i2c_bus = I2C_BUS.init(i2c_bus);
 
+    
     {   // HIGH priority
         let spawner = EXECUTOR_HIGH.start(interrupt::SWI_IRQ_1);
         unwrap!(spawner.spawn(run_state_machine()));
         unwrap!(spawner.spawn(tick_every_second()));
     }
-
-    {   // MID priority
-        let spawner = EXECUTOR_MED.start(interrupt::SWI_IRQ_0);
-        unwrap!(spawner.spawn(button_task(p.PIN_2.degrade(), Button::Adjust)));
-        unwrap!(spawner.spawn(button_task(p.PIN_3.degrade(), Button::Select)));
-    }
     
-    EXECUTOR_LOW.init(Executor::new()).run(|spawner| {
-        // LOW priority
-        unwrap!(spawner.spawn(display_update_task(i2c_bus)));
-        unwrap!(spawner.spawn(rtc_task(i2c_bus)));
-        unwrap!(spawner.spawn(blink_task()));
-        unwrap!(spawner.spawn(init()));
-    });
+    #[cfg(feature = "display-test")]
+    {
+        EXECUTOR_LOW.init(Executor::new()).run(|spawner| {
+            unwrap!(spawner.spawn(display_test(i2c_bus)))
+        });
+    }
+
+    #[cfg(feature = "clock")]
+    {
+        {   // MID priority
+            let spawner = EXECUTOR_MED.start(interrupt::SWI_IRQ_0);
+            unwrap!(spawner.spawn(button_task(p.PIN_2.degrade(), Button::Adjust)));
+            unwrap!(spawner.spawn(button_task(p.PIN_3.degrade(), Button::Select)));
+        }
+
+        EXECUTOR_LOW.init(Executor::new()).run(|spawner| {
+            // LOW priority
+            unwrap!(spawner.spawn(display_update_task(i2c_bus)));
+            unwrap!(spawner.spawn(rtc_task(i2c_bus)));
+            unwrap!(spawner.spawn(blink_task()));
+            unwrap!(spawner.spawn(init()));
+        });
+    }
+
 }
 
 #[embassy_executor::task]
@@ -126,20 +145,24 @@ async fn run_state_machine() {
     }
 }
 
+pub fn init_display_modules(i2c_bus: &'static I2c0Bus) -> Vec<DisplayChip<'_>, 4> {
+    DISPLAY_ADDRESS_RANGE
+        .into_iter()
+        .rev() // For compatibility with prev hardware
+        .map(|addr| {
+            let i2c_dev = I2cDevice::new(i2c_bus);
+            IS31FL3731::new(i2c_dev, addr)
+        })
+        .filter_map(|mut d| d.setup().ok().map(|_| d))
+        .collect::<Vec<DisplayChip, DISPLAY_ADDRESS_RANGE_CNT>>()
+}
+
 #[embassy_executor::task]
 async fn display_update_task(i2c_bus: &'static I2c0Bus) {
     let mut state_receiver = STATE_OUTPUT_CHANNEL.subscriber().unwrap();
 
     loop {
-        let modules = DISPLAY_ADDRESS_RANGE
-            .into_iter()
-            .rev() // For compatibility with prev hardware
-            .map(|addr| {
-                let i2c_dev = I2cDevice::new(i2c_bus);
-                IS31FL3731::new(i2c_dev, addr)
-            })
-            .filter_map(|mut d| d.setup().ok().map(|_| d))
-            .collect::<Vec<DisplayChip, DISPLAY_ADDRESS_RANGE_CNT>>();
+        let modules = init_display_modules(i2c_bus);
 
         info!("Initialized {} display modules", modules.len());
         let mut clock = ClockDisplay::new(modules);
@@ -157,10 +180,10 @@ async fn display_update_task(i2c_bus: &'static I2c0Bus) {
             let c = BRIGHTNESS_MAP[state.brightness_step];
             let time = state.time;
             let digits = time.time_as_digits();
-            
+
             let display_dimmed = state.dimming;
             let dc = 0x02;
-            
+
             let colors = match display_dimmed {
                 Dimmed::None => [c; 6],
                 Dimmed::Hours => [dc, dc, c, c, c, c],
@@ -242,39 +265,6 @@ async fn rtc_task(i2c_bus: &'static I2c0Bus) {
         error!("RTC error, reinitializing");
     }
 }
-
-// TODO move to state
-// #[embassy_executor::task]
-// async fn led_test(mut clock: StaticClockDisplay) {
-//     let mut cnt: u8 = 0;
-//
-//     loop {
-//         for driver in clock.drivers.iter_mut() {
-//             driver.set_color_byte(cnt, 0x36).unwrap();
-//             if cnt > 0 {
-//                 driver.set_color_byte(cnt - 1, 0x00).unwrap();
-//             }
-//         }
-//
-//         Timer::after(Duration::from_millis(200)).await;
-//         cnt = (cnt + 1) % 144;
-//     }
-// }
-
-// TODO move to state
-// #[embassy_executor::task]
-// async fn led_numbers_test(mut clock: StaticClockDisplay) {
-//     let mut cnt: usize = 0;
-//
-//     loop {
-//         for i in 0..=4 {
-//             clock.draw_symbol(i, cnt, 0x70).unwrap();
-//         }
-//
-//         Timer::after(Duration::from_millis(200)).await;
-//         cnt = (cnt + 1) % 10;
-//     }
-// }
 
 /// Emits [InputEvent::Blink] events. Restarts the timer on [OutputEvents::StartBlinking] event..
 #[embassy_executor::task]
