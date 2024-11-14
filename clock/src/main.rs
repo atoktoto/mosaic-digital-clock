@@ -11,7 +11,7 @@ mod flash;
 #[cfg(feature = "display-test")]
 use crate::display_test::display_test;
 
-use crate::flash::{read, write, FlashData, RpFlash};
+use crate::flash::RpFlash;
 use crate::state::{Button, ButtonAction, ClockState, Dimmed, InputEvent, OutputEvents};
 use clock_display_lib::display::{ClockDisplay, BRIGHTNESS_MAP, DISPLAY_ADDRESS_RANGE, DISPLAY_ADDRESS_RANGE_CNT};
 use clock_display_lib::is31fl3731::IS31FL3731;
@@ -20,7 +20,7 @@ use core::iter::Iterator;
 use cortex_m_rt::entry;
 use defmt::*;
 use embassy_embedded_hal::shared_bus::blocking::i2c::I2cDevice;
-use embassy_executor::{Executor, InterruptExecutor, Spawner};
+use embassy_executor::{Executor, InterruptExecutor};
 use embassy_futures::select::select;
 use embassy_futures::select::Either;
 use embassy_rp::gpio::AnyPin;
@@ -214,7 +214,6 @@ async fn display_update_task(i2c_bus: &'static I2c0Bus) {
                 Dimmed::None => [c; 6],
                 Dimmed::Hours => [dc, dc, c, c, c, c],
                 Dimmed::Minutes => [c, c, dc, dc, c, c],
-                Dimmed::Both => [dc; 6],
             };
 
             let r = draw_digits(&digits, &colors, &mut clock);
@@ -288,7 +287,14 @@ async fn rtc_task(i2c_bus: &'static I2c0Bus) {
             }
         };
 
-        error!("RTC error, reinitializing");
+        match err {
+            Error::I2C(err) => {
+                error!("RTC error: {}, reinitializing", err);
+            }
+            Error::InvalidInputData => {
+                error!("RTC error: InvalidInputData, reinitializing");
+            }
+        };
     }
 }
 

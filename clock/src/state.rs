@@ -51,14 +51,13 @@ pub enum Dimmed {
     None,
     Hours,
     Minutes,
-    Both,
 }
 
 impl Dimmed {
     pub fn is_dimmed(&self) -> bool {
         match self {
             Dimmed::None => false,
-            Dimmed::Hours | Dimmed::Minutes | Dimmed::Both => true,
+            Dimmed::Hours | Dimmed::Minutes => true,
         }
     }
 }

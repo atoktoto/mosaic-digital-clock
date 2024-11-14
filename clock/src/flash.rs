@@ -54,7 +54,7 @@ pub fn write(flash: &mut RpFlash, offset: u32, data: &FlashData) -> Result<(), E
     };
 
     let mut wrapper_buf = [0u8; ERASE_SIZE];
-    let s = bincode::encode_into_slice(&wrapper, &mut wrapper_buf, BINCODE_CONFIG)?;
+    bincode::encode_into_slice(&wrapper, &mut wrapper_buf, BINCODE_CONFIG)?;
 
     flash.blocking_erase(ADDR_OFFSET + offset, ADDR_OFFSET + offset + ERASE_SIZE as u32)?;
     flash.blocking_write(ADDR_OFFSET + offset, &wrapper_buf)?;
