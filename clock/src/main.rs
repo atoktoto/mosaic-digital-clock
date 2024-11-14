@@ -11,6 +11,7 @@ mod flash;
 #[cfg(feature = "display-test")]
 use crate::display_test::display_test;
 
+use crate::flash::{read, write, FlashData, RpFlash};
 use crate::state::{Button, ButtonAction, ClockState, Dimmed, InputEvent, OutputEvents};
 use clock_display_lib::display::{ClockDisplay, BRIGHTNESS_MAP, DISPLAY_ADDRESS_RANGE, DISPLAY_ADDRESS_RANGE_CNT};
 use clock_display_lib::is31fl3731::IS31FL3731;
@@ -22,13 +23,12 @@ use embassy_embedded_hal::shared_bus::blocking::i2c::I2cDevice;
 use embassy_executor::{Executor, InterruptExecutor, Spawner};
 use embassy_futures::select::select;
 use embassy_futures::select::Either;
-use embassy_rp::{gpio, interrupt};
-use embassy_rp::flash::{Async, Flash, ERASE_SIZE};
 use embassy_rp::gpio::AnyPin;
 use embassy_rp::gpio::Pin;
 use embassy_rp::i2c;
 use embassy_rp::i2c::{Blocking, I2c};
-use embassy_rp::peripherals::{FLASH, I2C0};
+use embassy_rp::peripherals::I2C0;
+use embassy_rp::{gpio, interrupt};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::blocking_mutex::Mutex;
 use embassy_sync::channel::Channel;
@@ -39,7 +39,6 @@ use heapless::Vec;
 use pcf8563::*;
 use static_cell::StaticCell;
 use {defmt_rtt as _, panic_probe as _};
-use crate::flash::{read, write, FlashData, RpFlash};
 
 /// Locking method used across the codebase
 type RawMutex = CriticalSectionRawMutex;
@@ -51,9 +50,6 @@ type I2c0Device<'a> = I2cDevice<'a, RawMutex, I2c0>;
 type RtcChip<'a> = PCF8563<I2c0Device<'a>>;
 type DisplayChip<'a> = IS31FL3731<I2c0Device<'a>>;
 
-
-
-//TODO migrate to pubsub?
 static STATE_INPUT_CHANNEL: Channel<RawMutex, InputEvent, 32> = Channel::new();
 static STATE_OUTPUT_CHANNEL: PubSubChannel<RawMutex, OutputEvents, 32, 32, 32> = PubSubChannel::new();
 
@@ -71,12 +67,9 @@ unsafe fn SWI_IRQ_0() {
     EXECUTOR_MED.on_interrupt()
 }
 
-
 #[entry]
 fn main() -> ! {
     let p = embassy_rp::init(Default::default());
-
-    let flash: RpFlash = embassy_rp::flash::Flash::new(p.FLASH, p.DMA_CH0);
 
     let mut config = i2c::Config::default();
     config.frequency = 800_000;
@@ -85,23 +78,26 @@ fn main() -> ! {
     let i2c_bus = Mutex::new(RefCell::new(i2c));
     let i2c_bus = I2C_BUS.init(i2c_bus);
 
-    
-    {   // HIGH priority
+    let flash: RpFlash = embassy_rp::flash::Flash::new(p.FLASH, p.DMA_CH0);
+
+    {
+        // HIGH priority
         let spawner = EXECUTOR_HIGH.start(interrupt::SWI_IRQ_1);
         unwrap!(spawner.spawn(run_state_machine()));
         unwrap!(spawner.spawn(tick_every_second()));
     }
-    
+
     #[cfg(feature = "display-test")]
     {
-        EXECUTOR_LOW.init(Executor::new()).run(|spawner| {
-            unwrap!(spawner.spawn(display_test(i2c_bus)))
-        });
+        EXECUTOR_LOW
+            .init(Executor::new())
+            .run(|spawner| unwrap!(spawner.spawn(display_test(i2c_bus))));
     }
 
     #[cfg(feature = "clock")]
     {
-        {   // MID priority
+        {
+            // MID priority
             let spawner = EXECUTOR_MED.start(interrupt::SWI_IRQ_0);
             unwrap!(spawner.spawn(button_task(p.PIN_2.degrade(), Button::Adjust)));
             unwrap!(spawner.spawn(button_task(p.PIN_3.degrade(), Button::Select)));
@@ -109,20 +105,42 @@ fn main() -> ! {
 
         EXECUTOR_LOW.init(Executor::new()).run(|spawner| {
             // LOW priority
+            unwrap!(spawner.spawn(flash_storage_task(flash)));
             unwrap!(spawner.spawn(display_update_task(i2c_bus)));
             unwrap!(spawner.spawn(rtc_task(i2c_bus)));
             unwrap!(spawner.spawn(blink_task()));
             unwrap!(spawner.spawn(init()));
         });
     }
-
 }
 
 #[embassy_executor::task]
 async fn init() {
     Timer::after(Duration::from_millis(50)).await;
-    STATE_OUTPUT_CHANNEL.publisher().unwrap().publish(OutputEvents::TriggerRTCSync).await;
+    STATE_OUTPUT_CHANNEL
+        .publisher()
+        .unwrap()
+        .publish(OutputEvents::TriggerRTCSync)
+        .await;
     info!("Init complete");
+}
+
+#[embassy_executor::task]
+async fn flash_storage_task(mut flash: RpFlash<'static>) {
+    let sender = STATE_INPUT_CHANNEL.sender();
+    let mut subscriber = unwrap!(STATE_OUTPUT_CHANNEL.subscriber());
+
+    let read = flash::read_with_default(&mut flash, 0);
+    sender.send(InputEvent::SetStateFromFlash(read)).await;
+
+    loop {
+        let event = subscriber.next_message_pure().await; //TODO
+        if let OutputEvents::SaveStateToFlash(data) = event {
+            unwrap!(flash::write(&mut flash, 0, &data));
+        } else {
+            continue;
+        }
+    }
 }
 
 /// This task owns [ClockState] end executes state transitions triggered by [InputEvent]s.
@@ -195,7 +213,7 @@ async fn display_update_task(i2c_bus: &'static I2c0Bus) {
             let colors = match display_dimmed {
                 Dimmed::None => [c; 6],
                 Dimmed::Hours => [dc, dc, c, c, c, c],
-                Dimmed::Minutes => [c,c,dc,dc,c,c],
+                Dimmed::Minutes => [c, c, dc, dc, c, c],
                 Dimmed::Both => [dc; 6],
             };
 

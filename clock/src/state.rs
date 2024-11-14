@@ -1,3 +1,4 @@
+use crate::flash::FlashData;
 use crate::time::DateTime;
 use clock_display_lib::display::MAX_BRIGHTNESS_LEVEL;
 use defmt::{unwrap, Format};
@@ -32,6 +33,7 @@ pub enum InputEvent {
 
     ButtonEvent(Button, ButtonAction),
     SetTimeFromRTC(DateTime),
+    SetStateFromFlash(FlashData),
 }
 
 #[derive(Format, Clone)]
@@ -41,6 +43,7 @@ pub enum OutputEvents {
     InvalidTransition(State, InputEvent),
     StartBlinking,
     TriggerRTCSync,
+    SaveStateToFlash(FlashData),
 }
 
 #[derive(Format, Clone)]
@@ -55,7 +58,7 @@ impl Dimmed {
     pub fn is_dimmed(&self) -> bool {
         match self {
             Dimmed::None => false,
-            Dimmed::Hours | Dimmed::Minutes | Dimmed::Both => true
+            Dimmed::Hours | Dimmed::Minutes | Dimmed::Both => true,
         }
     }
 }
@@ -108,7 +111,9 @@ impl ClockState {
             // Brightness
             (State::Normal, InputEvent::ButtonEvent(Button::Adjust, ButtonAction::ShortPress)) => {
                 self.brightness_step = (self.brightness_step + 1) % MAX_BRIGHTNESS_LEVEL;
-                //TODO save brightness in EEPROM
+                emit(OutputEvents::SaveStateToFlash(FlashData {
+                    brightness: self.brightness_step,
+                }));
                 emit(OutputEvents::UpdateDisplay(self.clone()));
             }
 
@@ -163,6 +168,10 @@ impl ClockState {
                 emit(OutputEvents::UpdateDisplay(self.clone()));
             }
             (_, InputEvent::Blink) => {}
+
+            (_, InputEvent::SetStateFromFlash(flash)) => {
+                self.brightness_step = flash.brightness;
+            }
 
             (state, input) => {
                 emit(OutputEvents::InvalidTransition(state, input.clone()));

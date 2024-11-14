@@ -1,10 +1,9 @@
-use embassy_time::{Duration, Timer};
-use clock_display_lib::display::ClockDisplay;
 use crate::{init_display_modules, I2c0Bus};
+use clock_display_lib::display::ClockDisplay;
+use embassy_time::{Duration, Timer};
 
 #[embassy_executor::task]
 pub async fn display_test(i2c_bus: &'static I2c0Bus) {
-
     let modules = init_display_modules(i2c_bus);
     let mut clock = ClockDisplay::new(modules);
 
@@ -39,4 +38,3 @@ pub async fn display_test(i2c_bus: &'static I2c0Bus) {
         }
     }
 }
-

@@ -1,13 +1,12 @@
-use bincode::{BorrowDecode, Decode, Encode};
 use bincode::error::{DecodeError, EncodeError};
-use defmt::{info, Format, Formatter, write, debug};
+use bincode::{BorrowDecode, Decode, Encode};
+use defmt::{debug, info, Format};
 use embassy_rp::flash;
 use embassy_rp::flash::{Async, Flash, ERASE_SIZE};
 use embassy_rp::peripherals::FLASH;
 
 pub type RpFlash<'a> = Flash<'a, FLASH, Async, FLASH_SIZE>;
 
-const STORED_DATA_SIZE: usize = 1024; // aligned
 const FLASH_SIZE: usize = 2 * 1024 * 1024;
 const ADDR_OFFSET: u32 = 0x100000;
 const CRC: crc::Crc<u16> = crc::Crc::<u16>::new(&crc::CRC_16_IBM_SDLC);
@@ -15,7 +14,7 @@ const BINCODE_CONFIG: bincode::config::Configuration = bincode::config::standard
 
 #[derive(Decode, Encode, Clone, Format, Default)]
 pub struct FlashData {
-    pub brightness: u8,
+    pub brightness: usize,
 }
 
 #[derive(BorrowDecode, Encode, Clone, Format)]
@@ -56,7 +55,7 @@ pub fn write(flash: &mut RpFlash, offset: u32, data: &FlashData) -> Result<(), E
 
     let mut wrapper_buf = [0u8; ERASE_SIZE];
     let s = bincode::encode_into_slice(&wrapper, &mut wrapper_buf, BINCODE_CONFIG)?;
-    
+
     flash.blocking_erase(ADDR_OFFSET + offset, ADDR_OFFSET + offset + ERASE_SIZE as u32)?;
     flash.blocking_write(ADDR_OFFSET + offset, &wrapper_buf)?;
     Ok(())
