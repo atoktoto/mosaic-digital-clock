@@ -125,24 +125,6 @@ async fn init() {
     info!("Init complete");
 }
 
-#[embassy_executor::task]
-async fn flash_storage_task(mut flash: RpFlash<'static>) {
-    let sender = STATE_INPUT_CHANNEL.sender();
-    let mut subscriber = unwrap!(STATE_OUTPUT_CHANNEL.subscriber());
-
-    let read = flash::read_with_default(&mut flash, 0);
-    sender.send(InputEvent::SetStateFromFlash(read)).await;
-
-    loop {
-        let event = subscriber.next_message_pure().await; //TODO
-        if let OutputEvents::SaveStateToFlash(data) = event {
-            unwrap!(flash::write(&mut flash, 0, &data));
-        } else {
-            continue;
-        }
-    }
-}
-
 /// This task owns [ClockState] end executes state transitions triggered by [InputEvent]s.
 #[embassy_executor::task]
 async fn run_state_machine() {
@@ -166,6 +148,44 @@ async fn run_state_machine() {
                 output => {
                     output_sender.publish(output).await;
                 }
+            }
+        }
+    }
+}
+
+#[embassy_executor::task]
+async fn flash_storage_task(mut flash: RpFlash<'static>) {
+    let sender = STATE_INPUT_CHANNEL.sender();
+    let mut subscriber = unwrap!(STATE_OUTPUT_CHANNEL.subscriber());
+
+    let read = flash::read_with_default(&mut flash, 0);
+    sender.send(InputEvent::SetStateFromFlash(read)).await;
+
+    let mut data_to_save = None;
+
+    loop {
+        if let Some(data) = data_to_save.as_mut() {
+            match select(
+                Timer::after(Duration::from_millis(1000)),
+                subscriber.next_message_pure(),
+            )
+            .await
+            {
+                Either::First(_timer_expired) => {
+                    unwrap!(flash::write(&mut flash, 0, &data));
+                    data_to_save = None;
+                }
+                Either::Second(OutputEvents::SaveStateToFlash(data)) => {
+                    data_to_save = Some(data);
+                }
+                Either::Second(_) => continue,
+            }
+        } else {
+            match subscriber.next_message_pure().await {
+                OutputEvents::SaveStateToFlash(data) => {
+                    data_to_save = Some(data);
+                }
+                _ => continue,
             }
         }
     }
